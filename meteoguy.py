@@ -939,10 +939,161 @@ def render_quotidien(day=None):
             lines.append("⛈️ <b>Risque d'orage aujourd'hui</b> — prudence en sortie d'école.")
     except Exception:
         pass
+    # gel / verglas / canicule
+    if tmin <= 0.5:
+        lines.append("🧊 <b>Gel ~%.0f°C ce matin</b> — verglas possible sur la route, protège les plantes." % tmin)
+    if tmax >= 34:
+        nuit = " (nuit chaude ~%.0f°C)" % tmin if tmin >= 20 else ""
+        lines.append("🥵 <b>Forte chaleur %.0f°C</b>%s — fais boire l'enfant, évite le plein air 12h-17h." % (tmax, nuit))
+    # ligne santé compacte (air + pollen)
+    try:
+        c = air_quality(*ZONES[HOME_ZONE])
+        bits = ["air %s" % _aqi_label(c.get("european_aqi"))]
+        amb = _pollen_label("ambroisie", c.get("ragweed_pollen"))
+        gra = _pollen_label("graminées", c.get("grass_pollen"))
+        if amb:   bits.append(amb)
+        elif gra: bits.append(gra)
+        lines.append("🩺 " + " · ".join(bits))
+    except Exception:
+        pass
     lines.append("")
     lines.append("🎒 <b>Habillage enfant (école) :</b>")
     lines += ["• " + r for r in _reco_habillage(tmin, tmax, pluie_ecole, tmax >= 27)]
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Bulletin santé : qualité de l'air + pollens + UV (Open-Meteo, sans clé)
+# --------------------------------------------------------------------------- #
+def air_quality(lat, lon):
+    p = urllib.parse.urlencode({
+        "latitude": lat, "longitude": lon,
+        "current": "european_aqi,pm2_5,pm10,ozone,grass_pollen,ragweed_pollen,"
+                   "birch_pollen,alder_pollen,mugwort_pollen,olive_pollen",
+        "timezone": "Europe/Paris"})
+    return get_json("https://air-quality-api.open-meteo.com/v1/air-quality?" + p)["current"]
+
+
+def _aqi_label(a):
+    if a is None:   return "?"
+    if a <= 20:     return "🟢 bon"
+    if a <= 40:     return "🟢 correct"
+    if a <= 60:     return "🟡 moyen"
+    if a <= 80:     return "🟠 dégradé"
+    if a <= 100:    return "🔴 mauvais"
+    return "🟣 très mauvais"
+
+
+def _pollen_label(name, v):
+    if v is None or v <= 0:
+        return None
+    # ambroisie/armoise : seuils plus bas (très allergènes)
+    lo, mod, hi = (5, 20, 50) if name in ("ambroisie", "armoise") else (10, 30, 80)
+    if v < lo:    lvl = "🟢 faible"
+    elif v < mod: lvl = "🟡 modéré"
+    elif v < hi:  lvl = "🟠 élevé"
+    else:         lvl = "🔴 très élevé"
+    return "%s %s" % (name, lvl)
+
+
+def render_sante(day=None):
+    """Qualité de l'air + pollens + UV, avec conseils enfant."""
+    day = day or datetime.date.today()
+    la, lo = ZONES[HOME_ZONE]
+    lines = ["🩺 <b>Santé-environnement — %s</b>" % HOME_ZONE]
+    try:
+        c = air_quality(la, lo)
+        aqi = c.get("european_aqi")
+        lines.append("🌫️ Air : <b>%s</b> (AQI %s · O₃ %.0f · PM2.5 %.0f)" % (
+            _aqi_label(aqi), aqi, c.get("ozone") or 0, c.get("pm2_5") or 0))
+        polls = [_pollen_label("graminées", c.get("grass_pollen")),
+                 _pollen_label("ambroisie", c.get("ragweed_pollen")),
+                 _pollen_label("bouleau", c.get("birch_pollen")),
+                 _pollen_label("aulne", c.get("alder_pollen")),
+                 _pollen_label("armoise", c.get("mugwort_pollen")),
+                 _pollen_label("olivier", c.get("olive_pollen"))]
+        polls = [p for p in polls if p]
+        lines.append("🤧 Pollens : " + (", ".join(polls) if polls else "🟢 faibles"))
+    except Exception as ex:
+        lines.append("(air/pollens indisponibles : %s)" % ex)
+    uv = None
+    try:
+        di = (day - datetime.date.today()).days
+        d7 = forecast_7d(la, lo)
+        uv = d7["uv_index_max"][di] if 0 <= di < len(d7["uv_index_max"]) else None
+    except Exception:
+        pass
+    if uv is not None:
+        warn = " — 🧴 crème SPF50 + chapeau" if uv >= 6 else ""
+        lines.append("☀️ UV max : <b>%.0f</b>%s" % (uv, warn))
+    return "\n".join(lines), {"aqi": locals().get("aqi"), "uv": uv}
+
+
+# --------------------------------------------------------------------------- #
+# Crue : vigilance officielle Météo-France « Crues » (38/26/71)
+# --------------------------------------------------------------------------- #
+def render_crue():
+    lines = ["🌊 <b>Risque crue (vigilance Météo-France)</b>"]
+    seen = False
+    for zone, dep in ZONE_DEPTS.items():
+        v = vigilance(dep)
+        if not v:
+            continue
+        seen = True
+        cr = v.get("Crues"); pi = v.get("Pluie-inondation")
+        parts = []
+        if cr:  parts.append("Crues %s" % VIGI_COLORS[cr])
+        if pi:  parts.append("Pluie-inond. %s" % VIGI_COLORS[pi])
+        lines.append("• <b>%s</b> (%d) : %s" % (zone.split(" (")[0], dep,
+                     ", ".join(parts) if parts else "🟢 RAS"))
+    if not seen:
+        lines.append("<i>Indisponible — clé METEOFRANCE_API_KEY non configurée.</i>")
+        lines.append("<i>(Le niveau en cm du Rhône n'est pas diffusé librement — géré par CNR.)</i>")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Notifs intelligentes : snapshot quotidien des prévisions + diff
+# --------------------------------------------------------------------------- #
+def forecast_snapshot():
+    """{date: {tmax, pop, storm}} pour J..J+3 (zone principale)."""
+    d = forecast_7d(*ZONES[HOME_ZONE])
+    snap = {}
+    for i, day in enumerate(d["time"][:4]):
+        try:
+            s = storm_day_summary(*ZONES[HOME_ZONE], day=datetime.date.fromisoformat(day))
+            lvl = s["peak_lvl"]
+        except Exception:
+            lvl = 0
+        snap[day] = {"tmax": d["temperature_2m_max"][i],
+                     "pop": d["precipitation_probability_max"][i],
+                     "storm": lvl}
+    return snap
+
+
+def diff_snapshot(old, new):
+    """Liste de changements significatifs entre deux snapshots."""
+    if not old:
+        return []
+    out = []
+    for day, n in new.items():
+        o = old.get(day)
+        if not o:
+            continue
+        dt = datetime.date.fromisoformat(day)
+        lib = "aujourd'hui" if dt == datetime.date.today() else fr_date(dt).split()[0] + " " + str(dt.day)
+        if o["tmax"] is not None and n["tmax"] is not None and abs(n["tmax"] - o["tmax"]) >= 5:
+            out.append("🌡️ %s : %+.0f°C (max %.0f→%.0f)" % (lib, n["tmax"] - o["tmax"], o["tmax"], n["tmax"]))
+        op, np_ = o["pop"] or 0, n["pop"] or 0
+        if op < 50 <= np_:
+            out.append("🌧️ %s : pluie désormais probable (%d%%)" % (lib, np_))
+        elif np_ < 30 <= op:
+            out.append("☀️ %s : pluie annulée (était %d%%)" % (lib, op))
+        if n["storm"] >= 2 and o["storm"] < 2:
+            out.append("⛈️ %s : risque d'orage AJOUTÉ" % lib)
+        elif o["storm"] >= 2 and n["storm"] < 2:
+            out.append("✅ %s : risque d'orage levé" % lib)
+    return out
 
 
 def render_alertes():

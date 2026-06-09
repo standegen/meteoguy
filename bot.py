@@ -67,7 +67,8 @@ AIDE = (
     "• /jour <code>quand</code> — <code>demain</code>, <code>lundi</code>, "
     "<code>weekend</code>, <code>+3</code>, <code>2026-06-13</code>\n"
     "• /orages <code>[quand]</code> — analyse orages des 3 zones (live)\n"
-    "• /radar — image radar en temps réel\n"
+    "• /radar — image radar · /radaranim — radar animé 🎬\n"
+    "• /sante — air + pollens + UV · /crue — vigilance crue\n"
     "• /vigilance — vigilance Météo-France (38/71/26)\n"
     "• /semaine — briefing 7 jours + El Niño\n"
     "• /elnino — point El Niño / ENSO\n"
@@ -133,6 +134,25 @@ def send_photo(png, caption):
         return json.load(r).get("ok", False)
 
 
+def send_animation(gif, caption):
+    token = m.load_token()
+    boundary = "----MeteoGuyAnim7c3f"
+
+    def field(name, value):
+        return ("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n"
+                % (boundary, name, value)).encode("utf-8")
+
+    body = field("chat_id", OWNER) + field("caption", caption) + field("parse_mode", "HTML")
+    body += ("--%s\r\nContent-Disposition: form-data; name=\"animation\"; "
+             "filename=\"radar.gif\"\r\nContent-Type: image/gif\r\n\r\n" % boundary).encode()
+    body += gif + b"\r\n" + ("--%s--\r\n" % boundary).encode()
+    req = urllib.request.Request(
+        "https://api.telegram.org/bot%s/sendAnimation" % token, data=body,
+        headers={"Content-Type": "multipart/form-data; boundary=%s" % boundary})
+    with urllib.request.urlopen(req, timeout=90) as r:
+        return json.load(r).get("ok", False)
+
+
 # --------------------------------------------------------------------------- #
 # Menus & commandes natives
 # --------------------------------------------------------------------------- #
@@ -140,9 +160,10 @@ def main_menu_kb():
     return [
         [("🎒 Matin", "act:matin"), ("🌤️ Aujourd'hui", "act:meteo")],
         [("⛈️ Orages", "act:orages"), ("📡 Radar", "act:radar")],
-        [("🚨 Vigilance", "act:vigilance"), ("📅 Semaine", "act:semaine")],
-        [("🌊 El Niño", "act:elnino"), ("🔔 Contrôle alerte", "act:alerte")],
-        [("📆 Choisir un jour", "nav:jourmenu")],
+        [("🎬 Radar animé", "act:radaranim"), ("🩺 Santé", "act:sante")],
+        [("🚨 Vigilance", "act:vigilance"), ("🌊 Crue", "act:crue")],
+        [("📅 Semaine", "act:semaine"), ("🌊 El Niño", "act:elnino")],
+        [("🔔 Contrôle alerte", "act:alerte"), ("📆 Choisir un jour", "nav:jourmenu")],
     ]
 
 
@@ -168,6 +189,9 @@ def set_my_commands():
         {"command": "jour", "description": "Météo d'un jour (demain, lundi, +3…)"},
         {"command": "orages", "description": "Analyse orages des 3 zones"},
         {"command": "radar", "description": "Image radar temps réel"},
+        {"command": "radaranim", "description": "Radar animé (trajectoire)"},
+        {"command": "sante", "description": "Air + pollens + UV"},
+        {"command": "crue", "description": "Vigilance crue (Rhône)"},
         {"command": "vigilance", "description": "Vigilance Météo-France"},
         {"command": "semaine", "description": "Briefing 7 jours + El Niño"},
         {"command": "elnino", "description": "Point El Niño / ENSO"},
@@ -188,17 +212,27 @@ def run_action(action, day=None):
         send(m.render_jour(day))
     elif action == "orages":
         send(m.render_orages_report(day))
-    elif action == "radar":
-        send("📡 Génération du radar…")
+    elif action in ("radar", "radaranim"):
+        anim = action == "radaranim"
+        send("📡 Génération du radar%s…" % (" animé" if anim else ""))
         try:
             import radar
             las = [la for la, lo in m.ZONES.values()]
             los = [lo for la, lo in m.ZONES.values()]
             center = (sum(las) / len(las), sum(los) / len(los))
-            png, ts = radar.radar_png(center, zones=m.ZONES, zoom=8)
-            send_photo(png, radar.radar_caption(ts))
+            if anim:
+                gif, ts = radar.radar_gif(center, zones=m.ZONES, zoom=8)
+                send_animation(gif, "🎬 Radar animé — trajectoire des cellules (RainViewer)")
+            else:
+                png, ts = radar.radar_png(center, zones=m.ZONES, zoom=8)
+                send_photo(png, radar.radar_caption(ts))
         except Exception as e:
             send("⚠️ Radar indisponible : %s" % e)
+    elif action == "sante":
+        txt, _ = m.render_sante()
+        send(txt)
+    elif action == "crue":
+        send(m.render_crue())
     elif action == "matin":
         send(m.render_quotidien())
     elif action == "vigilance":
@@ -250,7 +284,8 @@ def handle(text):
     if cmd in ("start", "aide", "help"):
         run_action("aide")
         run_action("menu")
-    elif cmd in ("menu", "meteo", "radar", "elnino", "alerte", "matin", "vigilance"):
+    elif cmd in ("menu", "meteo", "radar", "radaranim", "elnino", "alerte",
+                 "matin", "vigilance", "sante", "crue"):
         run_action(cmd)
     elif cmd in ("semaine", "briefing"):
         run_action("semaine")
@@ -327,6 +362,18 @@ def scheduler_loop():
                 last_daily = now.date()
                 send(m.render_quotidien())
                 m.log_line("%s QUOTIDIEN envoyé" % now.strftime("%Y-%m-%d %H:%M"))
+                # notifs intelligentes : alerter seulement si la prévision a changé
+                try:
+                    snap_path = os.path.join(m.DATA_DIR, "snapshot.json")
+                    new = m.forecast_snapshot()
+                    old = json.load(open(snap_path)) if os.path.exists(snap_path) else None
+                    changes = m.diff_snapshot(old, new)
+                    if changes:
+                        send("🔔 <b>Changements de prévision</b>\n"
+                             + "\n".join("• " + c for c in changes))
+                    json.dump(new, open(snap_path, "w"))
+                except Exception as e:
+                    print("notif diff error:", e, flush=True)
             if time.time() - last_alerte >= alerte_interval():
                 last_alerte = time.time()
                 msg, new_keys = m.render_alertes()

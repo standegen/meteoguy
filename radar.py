@@ -33,11 +33,13 @@ def _num2deg(x, y, z):
     return lat, lon
 
 
-def _render(center, zoom, tiles):
-    """Fond de carte net + couche radar (zoom 5) ré-échantillonnée. -> (canvas,x0,y0,W,H,ts)."""
+def _meta():
     meta = json.loads(_get("https://api.rainviewer.com/public/weather-maps.json"))
-    host, frame = meta["host"], meta["radar"]["past"][-1]
-    path, ts = frame["path"], frame["time"]
+    r = meta["radar"]
+    return meta["host"], r["past"], r.get("nowcast", [])
+
+
+def _basemap(center, zoom, tiles):
     cx, cy = _deg2num(center[0], center[1], zoom)
     tw, th = tiles
     x0, y0 = int(cx) - tw // 2, int(cy) - th // 2
@@ -49,10 +51,15 @@ def _render(center, zoom, tiles):
             if not (0 <= X < 2 ** zoom and 0 <= Y < 2 ** zoom):
                 continue
             try:
-                b = Image.open(io.BytesIO(_get(BASEMAP % (zoom, X, Y)))).convert("RGBA")
-                canvas.paste(b, (dx * 256, dy * 256))
+                canvas.paste(Image.open(io.BytesIO(_get(BASEMAP % (zoom, X, Y)))).convert("RGBA"),
+                             (dx * 256, dy * 256))
             except Exception:
                 pass
+    return canvas, x0, y0, W, H
+
+
+def _radar_overlay(host, path, zoom, tiles, x0, y0, W, H):
+    tw, th = tiles
     lat_tl, lon_tl = _num2deg(x0, y0, zoom)
     lat_br, lon_br = _num2deg(x0 + tw, y0 + th, zoom)
     rxa, rya = [v * 256 for v in _deg2num(lat_tl, lon_tl, RADAR_ZOOM)]
@@ -63,15 +70,23 @@ def _render(center, zoom, tiles):
     for tx in range(txm, txM + 1):
         for ty in range(tym, tyM + 1):
             try:
-                rt = Image.open(io.BytesIO(_get(
-                    "%s%s/256/%d/%d/%d/4/1_1.png" % (host, path, RADAR_ZOOM, tx, ty)))).convert("RGBA")
-                mosaic.paste(rt, ((tx - txm) * 256, (ty - tym) * 256))
+                mosaic.paste(Image.open(io.BytesIO(_get(
+                    "%s%s/256/%d/%d/%d/4/1_1.png" % (host, path, RADAR_ZOOM, tx, ty)))).convert("RGBA"),
+                    ((tx - txm) * 256, (ty - tym) * 256))
             except Exception:
                 pass
     patch = mosaic.crop((int(rxa - txm * 256), int(rya - tym * 256),
                          int(round(rxb - txm * 256)), int(round(ryb - tym * 256))))
-    canvas.alpha_composite(patch.resize((W, H), Image.BILINEAR))
-    return canvas, x0, y0, W, H, ts
+    return patch.resize((W, H), Image.BILINEAR)
+
+
+def _render(center, zoom, tiles):
+    """Fond de carte + dernière trame radar observée. -> (canvas,x0,y0,W,H,ts)."""
+    host, past, _ = _meta()
+    frame = past[-1]
+    canvas, x0, y0, W, H = _basemap(center, zoom, tiles)
+    canvas.alpha_composite(_radar_overlay(host, frame["path"], zoom, tiles, x0, y0, W, H))
+    return canvas, x0, y0, W, H, frame["time"]
 
 
 def _px(la, lo, x0, y0, zoom):
@@ -115,6 +130,34 @@ def impact_map(slat, slon, zlat, zlon, zone_name, dist_km):
     out = io.BytesIO()
     canvas.convert("RGB").save(out, format="PNG")
     return out.getvalue()
+
+
+def radar_gif(center, zones=None, zoom=8, tiles=(3, 3), past=8):
+    """Animation GIF : `past` dernières trames observées + nowcast (trajectoire des cellules)."""
+    from PIL import ImageDraw
+    host, past_fr, now_fr = _meta()
+    frames = past_fr[-past:] + now_fr
+    base, x0, y0, W, H = _basemap(center, zoom, tiles)
+    imgs = []
+    for fr in frames:
+        c = base.copy()
+        c.alpha_composite(_radar_overlay(host, fr["path"], zoom, tiles, x0, y0, W, H))
+        d = ImageDraw.Draw(c)
+        for name, (la, lo) in (zones or {}).items():
+            ix, iy = _px(la, lo, x0, y0, zoom)
+            if 0 <= ix < W and 0 <= iy < H:
+                d.ellipse([ix - 5, iy - 5, ix + 5, iy + 5],
+                          outline=(0, 0, 0, 255), width=2, fill=(255, 60, 0, 255))
+        tag = datetime.datetime.fromtimestamp(fr["time"]).strftime("%Hh%M")
+        nowcast = fr in now_fr
+        d.rectangle([0, 0, 150, 22], fill=(0, 0, 0, 180))
+        d.text((5, 5), ("➡️ " if nowcast else "") + tag + (" (prévu)" if nowcast else ""),
+               fill=(255, 255, 255, 255))
+        imgs.append(c.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=128))
+    out = io.BytesIO()
+    imgs[0].save(out, format="GIF", save_all=True, append_images=imgs[1:],
+                 duration=450, loop=0, disposal=2, optimize=True)
+    return out.getvalue(), past_fr[-1]["time"]
 
 
 def radar_caption(ts):
