@@ -59,6 +59,41 @@ def fr_date(d):
     return "%s %d %s %d" % (JOURS_LONG[d.weekday()], d.day, MOIS[d.month], d.year)
 
 
+WEEKDAYS_FR = {"lundi": 0, "mardi": 1, "mercredi": 2, "jeudi": 3,
+               "vendredi": 4, "samedi": 5, "dimanche": 6}
+
+
+def parse_fr_date(text, base=None):
+    """Comprend les dates relatives FR. Renvoie une date, ou None si non compris.
+    Ex : 'demain', 'après-demain', 'lundi', 'lundi prochain', 'weekend', '+3',
+    '2026-06-13', ou vide -> aujourd'hui."""
+    base = base or datetime.date.today()
+    t = (text or "").strip().lower().replace("’", "'")
+    t = t.replace("après", "apres").replace("é", "e")
+    if t in ("", "aujourd'hui", "auj", "ajd", "ce jour", "today"):
+        return base
+    if t in ("demain", "tomorrow"):
+        return base + datetime.timedelta(days=1)
+    if t.replace("-", " ").strip() in ("apres demain",):
+        return base + datetime.timedelta(days=2)
+    try:
+        return datetime.date.fromisoformat(t)
+    except ValueError:
+        pass
+    if t.startswith("+") and t[1:].strip().isdigit():
+        return base + datetime.timedelta(days=int(t[1:].strip()))
+    if "weekend" in t or "week end" in t:
+        return base + datetime.timedelta(days=(5 - base.weekday()) % 7)  # samedi à venir
+    prochain = "prochain" in t
+    for name, wd in WEEKDAYS_FR.items():
+        if name in t:
+            delta = (wd - base.weekday()) % 7
+            if prochain and delta == 0:
+                delta = 7
+            return base + datetime.timedelta(days=delta)
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # Réseau
 # --------------------------------------------------------------------------- #
@@ -211,6 +246,45 @@ def forecast_7d(lat, lon):
         "timezone": "Europe/Paris", "forecast_days": 7,
     })
     return get_json("https://api.open-meteo.com/v1/forecast?" + p)["daily"]
+
+
+def rain_windows(lat, lon, day):
+    """Créneaux horaires de pluie d'une journée : liste (h_début, h_fin, proba_max)."""
+    di = (day - datetime.date.today()).days
+    fdays = min(max(di + 1, 1), 16)
+    p = urllib.parse.urlencode({
+        "latitude": lat, "longitude": lon,
+        "hourly": "precipitation,precipitation_probability",
+        "timezone": "Europe/Paris", "forecast_days": fdays,
+    })
+    h = get_json("https://api.open-meteo.com/v1/forecast?" + p)["hourly"]
+    wet = []
+    for i, t in enumerate(h["time"]):
+        dt = datetime.datetime.fromisoformat(t)
+        if dt.date() != day:
+            continue
+        pr = h["precipitation"][i] or 0
+        pp = h["precipitation_probability"][i]
+        if pr >= 0.2 or (pp is not None and pp >= 40):
+            wet.append((dt.hour, pp or 0))
+    if not wet:
+        return []
+    ranges, start, prev, mpp = [], wet[0][0], wet[0][0], wet[0][1]
+    for hr, pp in wet[1:]:
+        if hr == prev + 1:
+            prev, mpp = hr, max(mpp, pp)
+        else:
+            ranges.append((start, prev + 1, mpp)); start, prev, mpp = hr, hr, pp
+    ranges.append((start, prev + 1, mpp))
+    return ranges
+
+
+def fmt_rain_windows(ranges):
+    if not ranges:
+        return "🌧️ Pas de pluie significative attendue."
+    parts = ["%dh–%dh%s" % (a, b, " (jusqu'à %d%%)" % pp if pp else "")
+             for a, b, pp in ranges]
+    return "🌧️ Pluie prévue : " + ", ".join(parts)
 
 
 def compute_ensemble(lat, lon, days=7):
@@ -641,6 +715,8 @@ def render_orages_report(day):
         if s["peak"]:
             lines.append("   Pic : <i>%s</i>" % _ingredients_line(s["peak"]))
     lines.append("")
+    lines.append("🔄 <i>Données live récupérées à %s (rafraîchies à chaque demande).</i>"
+                 % datetime.datetime.now().strftime("%Hh%M"))
     lines.append("<i>Union AROME+ARPEGE+ICON+GFS · SHIP/WMAXSHEAR · "
                  "(AROME haute-réso ≤ +2 j ; au-delà, fiabilité moindre).</i>")
     if not any_risk:
@@ -680,10 +756,15 @@ def render_jour(day):
                 ("modèles divergents (±%.0f°C)" % spread if spread >= 4 else "accord modéré"))
         lines.append("🌡️ Tmax <b>%.0f°C</b> (%.0f–%.0f, %s) · Tmin %.0f°C" % (
             tx["mean"], tx["min"], tx["max"], conf, tn["mean"] if tn else 0))
-        lines.append("🌧️ Pluie : %d/%d modèles · 💨 rafales ~%.0f km/h" % (
+        lines.append("🌧️ Tendance pluie : %d/%d modèles · 💨 rafales ~%.0f km/h" % (
             wet, tot, match["gust"]["mean"] if match["gust"] else 0))
     else:
         lines.append("(hors de portée des modèles d'ensemble)")
+    # créneaux horaires de pluie
+    try:
+        lines.append(fmt_rain_windows(rain_windows(*ZONES[HOME_ZONE], day=day)))
+    except Exception:
+        pass
     lines.append("")
     lines.append(render_orages_report(day))
     return "\n".join(lines)

@@ -6,7 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
 ENV TZ=Europe/Paris
 
 WORKDIR /app
-COPY meteoguy.py briefing_hebdo.py bot.py ./
+# Pillow : composition de l'image radar (seule dépendance)
+RUN pip install --no-cache-dir pillow
+COPY meteoguy.py briefing_hebdo.py bot.py radar.py ./
 
-# Aucune dépendance pip (stdlib uniquement)
 CMD ["python", "-u", "bot.py"]

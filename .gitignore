@@ -10,3 +10,7 @@ logs/
 __pycache__/
 *.pyc
 .venv/
+
+# artefacts de test
+radar_test.png
+*.png

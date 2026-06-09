@@ -22,10 +22,11 @@ AIDE = (
     "🌤️ <b>MétéoGuy — ton expert météo</b>\n"
     "Zones suivies : <b>Sablons (38550)</b>, Grury (71760), Lapeyrouse-Mornay (26210).\n\n"
     "<b>Commandes :</b>\n"
-    "• /meteo — météo du jour à Sablons + analyse orages\n"
-    "• /jour <code>AAAA-MM-JJ</code> — météo d'une date précise\n"
-    "• /orages — analyse orages complète des 3 zones (aujourd'hui)\n"
-    "• /orages <code>AAAA-MM-JJ</code> — orages d'une autre date\n"
+    "• /meteo — météo du jour à Sablons + créneaux de pluie + orages\n"
+    "• /jour <code>quand</code> — météo d'un jour : <code>demain</code>, <code>lundi</code>, "
+    "<code>lundi prochain</code>, <code>weekend</code>, <code>+3</code> ou <code>2026-06-13</code>\n"
+    "• /orages <code>[quand]</code> — analyse orages complète des 3 zones (données live)\n"
+    "• /radar — image radar des précipitations en temps réel\n"
     "• /semaine — briefing 7 jours + El Niño (analyse Claude)\n"
     "• /elnino — point El Niño / ENSO\n"
     "• /alerte — forcer un contrôle orages/grêle maintenant\n"
@@ -49,13 +50,28 @@ def send(text):
     return m.send_telegram(text)
 
 
-def parse_date(args, default=None):
-    for a in args:
-        try:
-            return datetime.date.fromisoformat(a)
-        except ValueError:
-            pass
-    return default or datetime.date.today()
+def send_photo(png, caption):
+    token = m.load_token()
+    boundary = "----MeteoGuyBoundary7c3f"
+
+    def field(name, value):
+        return ("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n"
+                % (boundary, name, value)).encode("utf-8")
+
+    body = field("chat_id", OWNER) + field("caption", caption) + field("parse_mode", "HTML")
+    body += ("--%s\r\nContent-Disposition: form-data; name=\"photo\"; "
+             "filename=\"radar.png\"\r\nContent-Type: image/png\r\n\r\n" % boundary).encode()
+    body += png + b"\r\n" + ("--%s--\r\n" % boundary).encode()
+    req = urllib.request.Request(
+        "https://api.telegram.org/bot%s/sendPhoto" % token, data=body,
+        headers={"Content-Type": "multipart/form-data; boundary=%s" % boundary})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.load(r).get("ok", False)
+
+
+def parse_when(args):
+    """Date depuis des mots relatifs FR (ou aujourd'hui par défaut)."""
+    return m.parse_fr_date(" ".join(args)) if args else datetime.date.today()
 
 
 # --------------------------------------------------------------------------- #
@@ -73,9 +89,24 @@ def handle(text):
     elif cmd == "/meteo":
         send(m.render_jour(datetime.date.today()))
     elif cmd == "/jour":
-        send(m.render_jour(parse_date(args)))
+        day = parse_when(args)
+        send(m.render_jour(day) if day else
+             "❓ Date non comprise. Essaie : demain, lundi, lundi prochain, weekend, +3, 2026-06-13.")
     elif cmd == "/orages":
-        send(m.render_orages_report(parse_date(args)))
+        day = parse_when(args)
+        send(m.render_orages_report(day) if day else
+             "❓ Date non comprise. Essaie : demain, lundi, weekend, +3, 2026-06-13.")
+    elif cmd == "/radar":
+        send("📡 Génération du radar…")
+        try:
+            import radar
+            las = [la for la, lo in m.ZONES.values()]
+            los = [lo for la, lo in m.ZONES.values()]
+            center = (sum(las) / len(las), sum(los) / len(los))
+            png, ts = radar.radar_png(center, zones=m.ZONES, zoom=8)
+            send_photo(png, radar.radar_caption(ts))
+        except Exception as e:
+            send("⚠️ Radar indisponible : %s" % e)
     elif cmd == "/elnino":
         send(m.render_elnino())
     elif cmd == "/alerte":
