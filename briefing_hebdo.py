@@ -109,9 +109,13 @@ def main():
             pass
         ok = m.send_telegram(msg)
         log("envoyé (%s)" % brain if ok else "ÉCHEC envoi (%s)" % brain)
+        print("MÉTÉOGUY briefing -> Telegram %s · rédigé par %s" %
+              ("OK" if ok else "ÉCHEC", brain))
     else:
         log("aucune IA -> repli déterministe")
-        m.send_telegram(m.render_briefing())
+        ok = m.send_telegram(m.render_briefing())
+        print("MÉTÉOGUY briefing -> Telegram %s · repli déterministe (aucune IA)" %
+              ("OK" if ok else "ÉCHEC"))
 
 
 if __name__ == "__main__":
