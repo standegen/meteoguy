@@ -6,8 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
 ENV TZ=Europe/Paris
 
 WORKDIR /app
-# Pillow : composition de l'image radar (seule dépendance)
-RUN pip install --no-cache-dir pillow
-COPY meteoguy.py briefing_hebdo.py bot.py radar.py ./
+# Pillow (cartes radar) + paho-mqtt (foudre Blitzortung)
+RUN pip install --no-cache-dir pillow "paho-mqtt==1.6.1"
+COPY meteoguy.py briefing_hebdo.py bot.py radar.py foudre.py ./
 
 CMD ["python", "-u", "bot.py"]

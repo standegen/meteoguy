@@ -33,19 +33,15 @@ def _num2deg(x, y, z):
     return lat, lon
 
 
-def radar_png(center, zones=None, zoom=8, tiles=(3, 3)):
-    """center=(lat,lon). Renvoie (png_bytes, unix_ts de l'observation radar)."""
-    from PIL import ImageDraw
+def _render(center, zoom, tiles):
+    """Fond de carte net + couche radar (zoom 5) ré-échantillonnée. -> (canvas,x0,y0,W,H,ts)."""
     meta = json.loads(_get("https://api.rainviewer.com/public/weather-maps.json"))
     host, frame = meta["host"], meta["radar"]["past"][-1]
     path, ts = frame["path"], frame["time"]
-
     cx, cy = _deg2num(center[0], center[1], zoom)
     tw, th = tiles
     x0, y0 = int(cx) - tw // 2, int(cy) - th // 2
     W, H = tw * 256, th * 256
-
-    # 1) Fond de carte net au zoom demandé
     canvas = Image.new("RGBA", (W, H), (235, 235, 235, 255))
     for dx in range(tw):
         for dy in range(th):
@@ -57,8 +53,6 @@ def radar_png(center, zones=None, zoom=8, tiles=(3, 3)):
                 canvas.paste(b, (dx * 256, dy * 256))
             except Exception:
                 pass
-
-    # 2) Couche radar (zoom 5) ré-échantillonnée sur la même emprise
     lat_tl, lon_tl = _num2deg(x0, y0, zoom)
     lat_br, lon_br = _num2deg(x0 + tw, y0 + th, zoom)
     rxa, rya = [v * 256 for v in _deg2num(lat_tl, lon_tl, RADAR_ZOOM)]
@@ -76,22 +70,51 @@ def radar_png(center, zones=None, zoom=8, tiles=(3, 3)):
                 pass
     patch = mosaic.crop((int(rxa - txm * 256), int(rya - tym * 256),
                          int(round(rxb - txm * 256)), int(round(ryb - tym * 256))))
-    patch = patch.resize((W, H), Image.BILINEAR)
-    canvas.alpha_composite(patch)
+    canvas.alpha_composite(patch.resize((W, H), Image.BILINEAR))
+    return canvas, x0, y0, W, H, ts
 
-    # 3) Marqueurs des zones
+
+def _px(la, lo, x0, y0, zoom):
+    px, py = _deg2num(la, lo, zoom)
+    return int((px - x0) * 256), int((py - y0) * 256)
+
+
+def radar_png(center, zones=None, zoom=8, tiles=(3, 3)):
+    """center=(lat,lon). Renvoie (png_bytes, unix_ts de l'observation radar)."""
+    from PIL import ImageDraw
+    canvas, x0, y0, W, H, ts = _render(center, zoom, tiles)
     draw = ImageDraw.Draw(canvas)
     for name, (la, lo) in (zones or {}).items():
-        px, py = _deg2num(la, lo, zoom)
-        ix, iy = int((px - x0) * 256), int((py - y0) * 256)
+        ix, iy = _px(la, lo, x0, y0, zoom)
         if 0 <= ix < W and 0 <= iy < H:
             draw.ellipse([ix - 5, iy - 5, ix + 5, iy + 5],
                          outline=(0, 0, 0, 255), width=2, fill=(255, 60, 0, 255))
             draw.text((ix + 8, iy - 5), name.split(" (")[0], fill=(0, 0, 0, 255))
-
     out = io.BytesIO()
     canvas.convert("RGB").save(out, format="PNG")
     return out.getvalue(), ts
+
+
+def impact_map(slat, slon, zlat, zlon, zone_name, dist_km):
+    """Carte d'un impact de foudre : zone (rouge) + impact ⚡ (jaune). -> png bytes."""
+    from PIL import ImageDraw
+    center = ((slat + zlat) / 2, (slon + zlon) / 2)
+    canvas, x0, y0, W, H, ts = _render(center, zoom=9, tiles=(3, 3))
+    draw = ImageDraw.Draw(canvas)
+    # zone
+    zx, zy = _px(zlat, zlon, x0, y0, zoom=9)
+    draw.ellipse([zx - 6, zy - 6, zx + 6, zy + 6], outline=(0, 0, 0, 255), width=2,
+                 fill=(255, 60, 0, 255))
+    draw.text((zx + 9, zy - 6), zone_name.split(" (")[0], fill=(0, 0, 0, 255))
+    # impact foudre
+    ix, iy = _px(slat, slon, x0, y0, zoom=9)
+    draw.line([zx, zy, ix, iy], fill=(0, 0, 0, 160), width=2)
+    draw.ellipse([ix - 8, iy - 8, ix + 8, iy + 8], outline=(120, 90, 0, 255), width=2,
+                 fill=(255, 230, 0, 255))
+    draw.text((ix + 10, iy - 6), "⚡ %.0f km" % dist_km, fill=(0, 0, 0, 255))
+    out = io.BytesIO()
+    canvas.convert("RGB").save(out, format="PNG")
+    return out.getvalue()
 
 
 def radar_caption(ts):

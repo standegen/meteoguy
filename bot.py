@@ -19,6 +19,9 @@ import briefing_hebdo
 OWNER = str(os.environ.get("TELEGRAM_CHAT_ID") or m.load_config().get("chat_id") or "")
 HEARTBEAT_URL = os.environ.get("HEARTBEAT_URL")   # ex: https://hc-ping.com/<uuid>
 BRIEFING_HHMM = (7, 30)
+DAILY_HHMM = (6, 50)          # message quotidien (pluie/temp/habillage enfant)
+FOUDRE_RAYON_KM = 50.0
+_foudre_last = {}             # throttle par zone
 
 
 def alerte_interval():
@@ -26,20 +29,51 @@ def alerte_interval():
     return 15 * 60 if 5 <= datetime.date.today().month <= 9 else 30 * 60
 
 
+def on_impact(point, lat, lon, ts, dist):
+    """Callback foudre : alerte + carte (throttle 15 min par zone)."""
+    if time.time() - _foudre_last.get(point["nom"], 0) < 900:
+        return
+    _foudre_last[point["nom"]] = time.time()
+    heure = datetime.datetime.fromtimestamp(ts).strftime("%Hh%M:%S") if ts else "?"
+    send("⚡ <b>FOUDRE à %.0f km de %s</b>\nImpact à %s · position (%.3f, %.3f)\n"
+         "<i>Réseau Blitzortung</i>" % (dist, point["nom"], heure, lat, lon))
+    try:
+        import radar
+        png = radar.impact_map(lat, lon, point["lat"], point["lon"], point["nom"], dist)
+        send_photo(png, "⚡ Impact de foudre à %.0f km de %s" % (dist, point["nom"]))
+    except Exception as e:
+        print("foudre map error:", e, flush=True)
+
+
+def start_foudre():
+    try:
+        import foudre
+    except Exception as e:
+        print("foudre désactivé (paho-mqtt absent ?) :", e, flush=True)
+        return
+    pts = [{"nom": z.split(" (")[0], "lat": la, "lon": lo}
+           for z, (la, lo) in m.ZONES.items()]
+    foudre.FoudreWatcher(pts, on_impact, rayon_km=FOUDRE_RAYON_KM).start_background()
+    print("foudre: watcher démarré (rayon %.0f km)" % FOUDRE_RAYON_KM, flush=True)
+
+
 AIDE = (
     "🌤️ <b>MétéoGuy — ton expert météo</b>\n"
     "Zones : <b>Sablons (38550)</b>, Grury (71760), Lapeyrouse-Mornay (26210).\n\n"
     "<b>Commandes :</b>\n"
     "• /menu — menu à boutons\n"
+    "• /matin — résumé du jour + reco habillage enfant 🎒\n"
     "• /meteo — météo du jour + créneaux de pluie + orages\n"
     "• /jour <code>quand</code> — <code>demain</code>, <code>lundi</code>, "
-    "<code>lundi prochain</code>, <code>weekend</code>, <code>+3</code>, <code>2026-06-13</code>\n"
-    "• /orages <code>[quand]</code> — analyse orages des 3 zones (données live)\n"
+    "<code>weekend</code>, <code>+3</code>, <code>2026-06-13</code>\n"
+    "• /orages <code>[quand]</code> — analyse orages des 3 zones (live)\n"
     "• /radar — image radar en temps réel\n"
+    "• /vigilance — vigilance Météo-France (38/71/26)\n"
     "• /semaine — briefing 7 jours + El Niño\n"
     "• /elnino — point El Niño / ENSO\n"
     "• /alerte — contrôle orages/grêle immédiat\n\n"
-    "<i>Auto : surveillance grêle (15-30 min) + briefing chaque lundi.</i>"
+    "<i>Auto : surveillance grêle (15-30 min), ⚡ alerte foudre &lt;50 km, "
+    "message quotidien 6h50, briefing lundi.</i>"
 )
 
 
@@ -104,9 +138,10 @@ def send_photo(png, caption):
 # --------------------------------------------------------------------------- #
 def main_menu_kb():
     return [
-        [("🌤️ Aujourd'hui", "act:meteo"), ("⛈️ Orages", "act:orages")],
-        [("📡 Radar", "act:radar"), ("📅 Semaine", "act:semaine")],
-        [("🌊 El Niño", "act:elnino"), ("🚨 Contrôle alerte", "act:alerte")],
+        [("🎒 Matin", "act:matin"), ("🌤️ Aujourd'hui", "act:meteo")],
+        [("⛈️ Orages", "act:orages"), ("📡 Radar", "act:radar")],
+        [("🚨 Vigilance", "act:vigilance"), ("📅 Semaine", "act:semaine")],
+        [("🌊 El Niño", "act:elnino"), ("🔔 Contrôle alerte", "act:alerte")],
         [("📆 Choisir un jour", "nav:jourmenu")],
     ]
 
@@ -128,10 +163,12 @@ def resolve_when(quand):
 def set_my_commands():
     cmds = [
         {"command": "menu", "description": "Menu à boutons"},
+        {"command": "matin", "description": "Résumé du jour + habillage enfant"},
         {"command": "meteo", "description": "Météo du jour à Sablons"},
         {"command": "jour", "description": "Météo d'un jour (demain, lundi, +3…)"},
         {"command": "orages", "description": "Analyse orages des 3 zones"},
         {"command": "radar", "description": "Image radar temps réel"},
+        {"command": "vigilance", "description": "Vigilance Météo-France"},
         {"command": "semaine", "description": "Briefing 7 jours + El Niño"},
         {"command": "elnino", "description": "Point El Niño / ENSO"},
         {"command": "alerte", "description": "Contrôle orages/grêle immédiat"},
@@ -162,6 +199,22 @@ def run_action(action, day=None):
             send_photo(png, radar.radar_caption(ts))
         except Exception as e:
             send("⚠️ Radar indisponible : %s" % e)
+    elif action == "matin":
+        send(m.render_quotidien())
+    elif action == "vigilance":
+        lines = ["🚨 <b>Vigilance Météo-France</b>"]
+        seen = False
+        for z, dep in m.ZONE_DEPTS.items():
+            v = m.vigilance(dep)
+            if not v:
+                continue
+            seen = True
+            items = ", ".join("%s %s" % (k, m.VIGI_COLORS[c])
+                              for k, c in sorted(v.items(), key=lambda i: -i[1]) if c >= 2)
+            lines.append("• <b>%s</b> (%d) : %s" % (z.split(" (")[0], dep, items or "🟢 RAS"))
+        if not seen:
+            lines.append("<i>Indisponible — clé METEOFRANCE_API_KEY non configurée.</i>")
+        send("\n".join(lines))
     elif action == "elnino":
         send(m.render_elnino())
     elif action == "alerte":
@@ -197,7 +250,7 @@ def handle(text):
     if cmd in ("start", "aide", "help"):
         run_action("aide")
         run_action("menu")
-    elif cmd in ("menu", "meteo", "radar", "elnino", "alerte"):
+    elif cmd in ("menu", "meteo", "radar", "elnino", "alerte", "matin", "vigilance"):
         run_action(cmd)
     elif cmd in ("semaine", "briefing"):
         run_action("semaine")
@@ -265,9 +318,15 @@ def poll_loop():
 # --------------------------------------------------------------------------- #
 def scheduler_loop():
     last_alerte, last_briefing = 0, None
+    last_daily = datetime.date.today()   # évite l'envoi quotidien sur simple redémarrage
     while True:
         now = datetime.datetime.now()
         try:
+            # message quotidien (pluie/temp/habillage enfant)
+            if (now.hour, now.minute) >= DAILY_HHMM and last_daily != now.date():
+                last_daily = now.date()
+                send(m.render_quotidien())
+                m.log_line("%s QUOTIDIEN envoyé" % now.strftime("%Y-%m-%d %H:%M"))
             if time.time() - last_alerte >= alerte_interval():
                 last_alerte = time.time()
                 msg, new_keys = m.render_alertes()
@@ -307,6 +366,7 @@ def main():
     except Exception as e:
         print("startup send error:", e, flush=True)
     threading.Thread(target=scheduler_loop, daemon=True).start()
+    start_foudre()
     print("Bot démarré.", flush=True)
     poll_loop()
 

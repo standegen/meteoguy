@@ -288,6 +288,26 @@ def rain_windows(lat, lon, day):
     return ranges
 
 
+def nowcast_rain(lat, lon):
+    """Nowcast pluie imminente via minutely_15 (pas de 15 min, ~1 h).
+    Renvoie 0 si pluie en cours, sinon minutes avant le début, sinon None."""
+    p = urllib.parse.urlencode({
+        "latitude": lat, "longitude": lon, "minutely_15": "precipitation",
+        "timezone": "Europe/Paris", "forecast_days": 1,
+    })
+    h = get_json("https://api.open-meteo.com/v1/forecast?" + p)["minutely_15"]
+    now = datetime.datetime.now()
+    onset = None
+    for i, t in enumerate(h["time"]):
+        delta = (datetime.datetime.fromisoformat(t) - now).total_seconds() / 60
+        if -15 <= delta <= 75 and (h["precipitation"][i] or 0) >= 0.2:
+            if delta <= 0:
+                return 0
+            if onset is None:
+                onset = int(delta)
+    return onset
+
+
 def fmt_rain_windows(ranges):
     if not ranges:
         return "🌧️ Pas de pluie significative attendue."
@@ -793,6 +813,138 @@ def render_jour(day):
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------------- #
+# Vigilance Météo-France (API DPVigilance, clé METEOFRANCE_API_KEY)
+# --------------------------------------------------------------------------- #
+ZONE_DEPTS = {"Sablons (38550)": 38, "Grury (71760)": 71, "Lapeyrouse-Mornay (26210)": 26}
+PHENO = {1: "Vent", 2: "Pluie-inondation", 3: "Orages", 4: "Crues",
+         5: "Neige-verglas", 6: "Canicule", 7: "Grand-froid",
+         8: "Avalanches", 9: "Vagues-submersion"}
+VIGI_COLORS = {1: "🟢 vert", 2: "🟡 jaune", 3: "🟠 orange", 4: "🔴 rouge"}
+MF_VIGI_URL = ("https://public-api.meteofrance.fr/public/DPVigilance/v1/"
+               "cartevigilance/encours")
+_vigi_cache = {"data": None, "t": 0}
+
+
+def _vigilance_raw():
+    key = os.environ.get("METEOFRANCE_API_KEY")
+    if not key:
+        return None
+    if _vigi_cache["data"] and (time.time() - _vigi_cache["t"]) < 900:
+        return _vigi_cache["data"]
+    req = urllib.request.Request(MF_VIGI_URL,
+                                 headers={"apikey": key, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        d = json.load(r)
+    _vigi_cache.update(data=d, t=time.time())
+    return d
+
+
+def vigilance(dep, echeance="J"):
+    """{phénomène: color_id 1-4} pour un département. {} si pas de clé/erreur."""
+    try:
+        d = _vigilance_raw()
+    except Exception:
+        return {}
+    if not d:
+        return {}
+    try:
+        periods = d["product"]["periods"]
+    except (KeyError, TypeError):
+        return {}
+    period = next((p for p in periods if str(p.get("echeance")) == echeance),
+                  periods[0] if periods else None)
+    if not period:
+        return {}
+    domains = (period.get("timelaps", {}) or {}).get("domain_ids", []) or []
+    dom = next((x for x in domains if str(x.get("domain_id")) == str(dep)), None)
+    if not dom:
+        return {}
+    items = dom.get("phenomenon_items") or dom.get("phenomenons_max_colors") or []
+    out = {}
+    for it in items:
+        try:
+            pid = int(it.get("phenomenon_id"))
+            col = int(it.get("phenomenon_max_color_id")
+                      or it.get("max_color_id") or it.get("color_id"))
+        except (TypeError, ValueError):
+            continue
+        if pid in PHENO and 1 <= col <= 4:
+            out[PHENO[pid]] = col
+    return out
+
+
+def vigilance_orages_override():
+    """Blocs d'alerte si vigilance orange/rouge Orages sur 38/71/26 (override garanti)."""
+    blocks = []
+    for zone, dep in ZONE_DEPTS.items():
+        v = vigilance(dep)
+        oc = v.get("Orages")
+        if oc and oc >= 3:
+            blocks.append((dep, oc, "🚨 <b>Vigilance %s ORAGES</b> — %s (dépt %d, %s)" % (
+                VIGI_COLORS[oc].split()[1], VIGI_COLORS[oc], dep, zone.split(" (")[0])))
+    return blocks
+
+
+# --------------------------------------------------------------------------- #
+# Message quotidien + reco habillage enfant (école)
+# --------------------------------------------------------------------------- #
+def _reco_habillage(tmin, tmax, pluie_ecole, uv_fort):
+    if tmin < 0:    base = "🧥 Manteau chaud, bonnet, gants, écharpe + sous-pull"
+    elif tmin < 7:  base = "🧥 Manteau chaud + bonnet/écharpe"
+    elif tmin < 12: base = "🧥 Veste/blouson + pull"
+    elif tmin < 17: base = "👕 Pull ou sweat"
+    elif tmin < 22: base = "👕 T-shirt manches longues (léger)"
+    else:           base = "👕 T-shirt / vêtements légers"
+    reco = [base]
+    if (tmax - tmin) >= 10:
+        reco.append("🧅 Habillage en couches (gros écart matin/après-midi)")
+    if pluie_ecole:
+        reco.append("☔ Imperméable/K-way (pluie aux heures d'école)")
+    if uv_fort:
+        reco.append("🧢 Casquette + gourde d'eau (soleil fort)")
+    return reco
+
+
+def render_quotidien(day=None):
+    """Message quotidien : pluie (créneaux), températures, reco habillage enfant école."""
+    day = day or datetime.date.today()
+    di = (day - datetime.date.today()).days
+    ens = compute_ensemble(*ZONES[HOME_ZONE], days=min(max(di + 1, 1), 16))
+    match = next((d for d in ens["days"] if d["date"] == day.isoformat()), None)
+    lines = ["☀️ <b>Bonjour ! Météo du jour — %s</b>" % fr_date(day).capitalize(),
+             "📍 %s" % HOME_ZONE, ""]
+    if not match:
+        lines.append("(données indisponibles)")
+        return "\n".join(lines)
+    tmin = match["tmin"]["mean"] if match["tmin"] else 0
+    tmax = match["tmax"]["mean"] if match["tmax"] else 0
+    rw = rain_windows(*ZONES[HOME_ZONE], day=day)
+    pluie_ecole = any(a < 18 and b > 7 for a, b, _ in rw)
+    lines.append("🌡️ Matin <b>~%.0f°C</b> · après-midi <b>~%.0f°C</b>" % (tmin, tmax))
+    lines.append(fmt_rain_windows(rw))
+    if day == datetime.date.today():   # nowcast pluie imminente (aujourd'hui seulement)
+        try:
+            nc = nowcast_rain(*ZONES[HOME_ZONE])
+            if nc == 0:
+                lines.append("🌧️ <b>Il pleut actuellement.</b>")
+            elif nc is not None:
+                lines.append("🌧️ <b>Pluie imminente dans ~%d min.</b>" % nc)
+        except Exception:
+            pass
+    # note orage du jour
+    try:
+        s = storm_day_summary(*ZONES[HOME_ZONE], day=day)
+        if s["peak_lvl"] >= 2:
+            lines.append("⛈️ <b>Risque d'orage aujourd'hui</b> — prudence en sortie d'école.")
+    except Exception:
+        pass
+    lines.append("")
+    lines.append("🎒 <b>Habillage enfant (école) :</b>")
+    lines += ["• " + r for r in _reco_habillage(tmin, tmax, pluie_ecole, tmax >= 27)]
+    return "\n".join(lines)
+
+
 def render_alertes():
     """Renvoie (message ou None, liste des nouveaux évènements à mémoriser)."""
     state = json.load(open(STATE_PATH)) if os.path.exists(STATE_PATH) else {"sent": []}
@@ -828,8 +980,18 @@ def render_alertes():
         blocks.append("%s <b>%s</b> — arrivée vers <b>%s</b>\n   <b>%s</b>\n   <i>%s</i>%s" % (
             LEVEL_ICON.get(lvl, "⛈️"), zone, eta, lbl, _ingredients_line(x), flux))
 
+    # Vigilance officielle Météo-France : override garanti si orange/rouge Orages
+    try:
+        for dep, col, txt in vigilance_orages_override():
+            vkey = "VIGI|%d|%s|%d" % (dep, datetime.date.today().isoformat(), col)
+            if vkey not in already:
+                new_keys.append(vkey)
+                blocks.append(txt)
+    except Exception:
+        pass
+
     # Échec TOTAL de récupération -> alerte technique (ne jamais masquer par un « RAS »)
-    if errors and len(errors) == len(ZONES):
+    if errors and len(errors) == len(ZONES) and not blocks:
         key = "TECH|" + datetime.datetime.now().strftime("%Y-%m-%dT%H")  # 1×/h max
         if key in already:
             return None, []
