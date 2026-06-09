@@ -1,0 +1,11 @@
+.git
+.github
+logs
+config.json
+alert_state.json
+briefing_draft.txt
+latest_ensemble.json
+ensemble_tmp.txt
+__pycache__
+*.pyc
+README.md

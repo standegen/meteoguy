@@ -1,10 +1,11 @@
 name: Alerte orage-grele (H-1)
 
-# Surveillance orages/grêle sur les 3 zones, toutes les 30 min.
+# Surveillance orages/grêle (SECOURS). Le service principal tourne sur le VPS.
+# Schedule désactivé pour éviter les doublons ; déclenchable à la main si besoin.
 on:
-  schedule:
-    - cron: "*/30 * * * *"
-  workflow_dispatch: {}        # déclenchement manuel possible
+  workflow_dispatch: {}
+  # schedule:
+  #   - cron: "*/30 * * * *"
 
 concurrency:
   group: meteoguy-alerte

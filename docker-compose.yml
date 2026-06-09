@@ -1,0 +1,14 @@
+services:
+  meteoguy:
+    build: .
+    container_name: meteoguy
+    restart: always
+    env_file: .env
+    environment:
+      - TZ=Europe/Paris
+      - MG_DATA_DIR=/app/state
+    volumes:
+      - meteoguy_state:/app/state   # persiste l'anti-spam & logs entre reconstructions
+
+volumes:
+  meteoguy_state:

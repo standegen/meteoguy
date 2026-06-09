@@ -22,8 +22,9 @@ except Exception:
     pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.environ.get("MG_DATA_DIR", HERE)   # /app/state en conteneur (volume persistant)
 CONFIG_PATH = os.path.join(HERE, "config.json")
-STATE_PATH = os.path.join(HERE, "alert_state.json")
+STATE_PATH = os.path.join(DATA_DIR, "alert_state.json")
 ENV_PATH = os.path.expanduser("~/.claude/channels/telegram/.env")
 
 ZONES = {
@@ -69,7 +70,7 @@ def get_json(url, timeout=30):
 
 def log_line(text):
     try:
-        logdir = os.path.join(HERE, "logs")
+        logdir = os.path.join(DATA_DIR, "logs")
         os.makedirs(logdir, exist_ok=True)
         with open(os.path.join(logdir, "alerte.log"), "a", encoding="utf-8") as f:
             f.write(text + "\n")
@@ -647,6 +648,47 @@ def render_orages_report(day):
     return "\n".join(lines)
 
 
+def render_elnino():
+    """Point El Niño/ENSO court (NOAA CPC)."""
+    try:
+        e = enso_status()
+    except Exception as ex:
+        return "🌊 El Niño : données indisponibles (%s)" % ex
+    tr = " → ".join("%+.2f" % v for v in e["trend"])
+    out = ["🌊 <b>El Niño / ENSO — NOAA CPC</b>",
+           "ONI %s : <b>%+.2f°C</b> — %s %s" % (e["season"], e["oni"], e["phase"], e["direction"]),
+           "Tendance (5 saisons) : %s" % tr]
+    if e["oni"] >= 0.5:
+        out.append("⚠️ Conditions El Niño officiellement en place.")
+    elif e["trend"][-1] - e["trend"][0] >= 0.3:
+        out.append("📈 Pacifique en réchauffement : El Niño en formation.")
+    return "\n".join(out)
+
+
+def render_jour(day):
+    """Analyse météo d'une journée (ensemble zone principale + analyse orages 3 zones)."""
+    di = (day - datetime.date.today()).days
+    ens = compute_ensemble(*ZONES[HOME_ZONE], days=min(max(di + 1, 1), 16))
+    match = next((d for d in ens["days"] if d["date"] == day.isoformat()), None)
+    lines = ["📅 <b>Analyse météo — %s</b>" % fr_date(day).capitalize(),
+             "📍 %s" % HOME_ZONE, ""]
+    if match:
+        tx, tn = match["tmax"], match["tmin"]
+        wet, tot = match["rain_agreement"]
+        spread = (tx["max"] - tx["min"]) if tx else 0
+        conf = ("modèles d'accord" if spread <= 2 else
+                ("modèles divergents (±%.0f°C)" % spread if spread >= 4 else "accord modéré"))
+        lines.append("🌡️ Tmax <b>%.0f°C</b> (%.0f–%.0f, %s) · Tmin %.0f°C" % (
+            tx["mean"], tx["min"], tx["max"], conf, tn["mean"] if tn else 0))
+        lines.append("🌧️ Pluie : %d/%d modèles · 💨 rafales ~%.0f km/h" % (
+            wet, tot, match["gust"]["mean"] if match["gust"] else 0))
+    else:
+        lines.append("(hors de portée des modèles d'ensemble)")
+    lines.append("")
+    lines.append(render_orages_report(day))
+    return "\n".join(lines)
+
+
 def render_alertes():
     """Renvoie (message ou None, liste des nouveaux évènements à mémoriser)."""
     state = json.load(open(STATE_PATH)) if os.path.exists(STATE_PATH) else {"sent": []}
@@ -784,25 +826,7 @@ def main():
         send = "send" in args
         dates = [a for a in args if a != "send"]
         day = datetime.date.fromisoformat(dates[0]) if dates else datetime.date.today()
-        di = (day - datetime.date.today()).days
-        ens = compute_ensemble(*ZONES[HOME_ZONE], days=min(max(di + 1, 1), 16))
-        match = next((d for d in ens["days"] if d["date"] == day.isoformat()), None)
-        lines = ["📅 <b>Analyse météo — %s</b>" % fr_date(day).capitalize(),
-                 "📍 %s" % HOME_ZONE, ""]
-        if match:
-            tx, tn = match["tmax"], match["tmin"]
-            wet, tot = match["rain_agreement"]
-            spread = (tx["max"] - tx["min"]) if tx else 0
-            conf = "modèles d'accord" if spread <= 2 else ("modèles divergents (±%.0f°C)" % spread if spread >= 4 else "accord modéré")
-            lines.append("🌡️ Tmax <b>%.0f°C</b> (%.0f–%.0f, %s) · Tmin %.0f°C" % (
-                tx["mean"], tx["min"], tx["max"], conf, tn["mean"] if tn else 0))
-            lines.append("🌧️ Pluie : %d/%d modèles · 💨 rafales ~%.0f km/h" % (
-                wet, tot, match["gust"]["mean"] if match["gust"] else 0))
-        else:
-            lines.append("(hors de portée des modèles d'ensemble)")
-        lines.append("")
-        lines.append(render_orages_report(day))
-        txt = "\n".join(lines)
+        txt = render_jour(day)
         if send:
             print("Envoyé." if send_telegram(txt) else "Échec envoi.")
         print(txt)

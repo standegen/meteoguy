@@ -1,10 +1,11 @@
 name: Briefing hebdo (lundi)
 
-# Briefing météo 7 jours + El Niño, rédigé par OpenAI, chaque lundi matin.
+# Briefing hebdo (SECOURS). Le service principal tourne sur le VPS.
+# Schedule désactivé pour éviter les doublons ; déclenchable à la main si besoin.
 on:
-  schedule:
-    - cron: "30 5 * * 1"       # lundi 05h30 UTC = 07h30 Paris (CEST) / 06h30 (CET)
   workflow_dispatch: {}
+  # schedule:
+  #   - cron: "30 5 * * 1"
 
 jobs:
   briefing:
