@@ -52,13 +52,17 @@ lundi). Il n'obéit qu'au propriétaire (`TELEGRAM_CHAT_ID`). Commandes :
 
 | Commande | Effet |
 |----------|-------|
-| `/meteo` | météo du jour à Sablons + analyse orages |
-| `/jour AAAA-MM-JJ` | météo d'une date précise |
-| `/orages [date]` | analyse orages complète des 3 zones |
+| `/meteo` | météo du jour à Sablons + **créneaux de pluie** + orages |
+| `/jour <quand>` | météo d'un jour : `demain`, `lundi`, `lundi prochain`, `weekend`, `+3`, `2026-06-13` |
+| `/orages [quand]` | analyse orages complète des 3 zones (**données live** horodatées) |
+| `/radar` | **image radar** des précipitations en temps réel (RainViewer + carte) |
 | `/semaine` | briefing 7 j + El Niño (analyse Claude) |
 | `/elnino` | point El Niño / ENSO |
 | `/alerte` | forcer un contrôle orages/grêle maintenant |
 | `/aide` | liste des commandes |
+
+> Les commandes `/orages` et `/radar` interrogent les **données en direct** à chaque appel
+> (aucun cache). `/radar` nécessite **Pillow** (inclus dans l'image Docker).
 
 **Déploiement (VPS Linux + Docker) :**
 ```bash
