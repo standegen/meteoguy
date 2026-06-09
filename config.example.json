@@ -1,0 +1,5 @@
+{
+  "_comment": "Copie en config.json pour un usage LOCAL. En cloud (GitHub Actions), chat_id vient du secret TELEGRAM_CHAT_ID. Les zones sont définies dans meteoguy.py.",
+  "chat_id": 0,
+  "owner": "ton_nom"
+}

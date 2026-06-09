@@ -1,0 +1,43 @@
+name: Alerte orage-grele (H-1)
+
+# Surveillance orages/grêle sur les 3 zones, toutes les 30 min.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}        # déclenchement manuel possible
+
+concurrency:
+  group: meteoguy-alerte
+  cancel-in-progress: false
+
+jobs:
+  alerte:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Restaure l'anti-spam (créneaux déjà alertés) du run précédent
+      - name: Restaurer l'état anti-spam
+        uses: actions/cache/restore@v4
+        with:
+          path: alert_state.json
+          key: meteoguy-alert-state-${{ github.run_id }}
+          restore-keys: meteoguy-alert-state-
+
+      - name: Détection orages/grêle
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python meteoguy.py alerte
+
+      # Sauvegarde l'anti-spam pour le prochain run
+      - name: Sauver l'état anti-spam
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: alert_state.json
+          key: meteoguy-alert-state-${{ github.run_id }}

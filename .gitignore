@@ -1,0 +1,12 @@
+# Secrets & état local (jamais versionnés)
+config.json
+alert_state.json
+briefing_draft.txt
+latest_ensemble.json
+ensemble_tmp.txt
+logs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/

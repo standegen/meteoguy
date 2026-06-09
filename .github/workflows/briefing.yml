@@ -1,0 +1,25 @@
+name: Briefing hebdo (lundi)
+
+# Briefing météo 7 jours + El Niño, rédigé par OpenAI, chaque lundi matin.
+on:
+  schedule:
+    - cron: "30 5 * * 1"       # lundi 05h30 UTC = 07h30 Paris (CEST) / 06h30 (CET)
+  workflow_dispatch: {}
+
+jobs:
+  briefing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Génération + envoi du briefing
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-5.4-mini
+        run: python briefing_hebdo.py
