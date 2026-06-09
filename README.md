@@ -49,15 +49,17 @@ python meteoguy.py send "txt"        # envoi d'un texte de test
 
 Le système tourne sur **GitHub Actions** (`.github/workflows/`), sans serveur :
 - **`alerte.yml`** — toutes les 30 min ; anti-spam persisté via le cache Actions.
-- **`briefing.yml`** — lundi 05h30 UTC (≈ 07h30 Paris) ; analyse rédigée par **OpenAI**.
+- **`briefing.yml`** — lundi 05h30 UTC (≈ 07h30 Paris) ; analyse rédigée par **Claude (API Anthropic)**.
 
 **Secrets à définir** dans le repo (Settings → Secrets → Actions) :
 | Secret | Rôle |
 |--------|------|
 | `TELEGRAM_BOT_TOKEN` | token du bot |
 | `TELEGRAM_CHAT_ID` | destinataire (`268329237`) |
-| `OPENAI_API_KEY` | analyse du briefing |
-| *(option)* `OPENAI_MODEL` | défaut `gpt-5.4-mini` |
+| `ANTHROPIC_API_KEY` | analyse du briefing (Claude) |
+| *(option)* `ANTHROPIC_MODEL` | défaut `claude-haiku-4-5-20251001` |
+
+> L'analyse supporte aussi OpenAI en repli (`OPENAI_API_KEY` / `OPENAI_MODEL`) si la clé Anthropic est absente.
 
 Le code lit ces valeurs via **variables d'environnement** (cloud) ou les **fichiers locaux**
 (`~/.claude/.../.env` + `config.json`) en repli. Zéro dépendance pip (stdlib uniquement).
