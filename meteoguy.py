@@ -97,10 +97,19 @@ def parse_fr_date(text, base=None):
 # --------------------------------------------------------------------------- #
 # Réseau
 # --------------------------------------------------------------------------- #
-def get_json(url, timeout=30):
-    req = urllib.request.Request(url, headers={"User-Agent": "MeteoGuy/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.load(r)
+def get_json(url, timeout=30, retries=3):
+    """GET JSON avec retries + backoff exponentiel (1/2/4 s) — robustesse réseau."""
+    last = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "MeteoGuy/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.load(r)
+        except Exception as e:
+            last = e
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+    raise last
 
 
 def log_line(text):
@@ -416,11 +425,12 @@ def _ship(cape, mixr, lr75, t500, shear06, fl):
 STORM_CODE_MODELS = [AR, "meteofrance_arpege_europe", "icon_d2", GF]
 
 
-def _multimodel_storm_codes(lat, lon, days=2):
-    """{timestamp ISO -> plus haut code orage (95-99) annoncé par un modèle}.
-    Combine AROME + ARPEGE + ICON-D2 + GFS pour ne manquer aucun orage."""
+def _multimodel_aux(lat, lon, days=2):
+    """{timestamp ISO -> {'code': plus haut code orage 95-99, 'lpi': potentiel de
+    foudre icon_d2}}. Combine AROME+ARPEGE+ICON-D2+GFS pour ne rien rater."""
     p = urllib.parse.urlencode({
-        "latitude": lat, "longitude": lon, "hourly": "weather_code",
+        "latitude": lat, "longitude": lon,
+        "hourly": "weather_code,lightning_potential",
         "models": ",".join(STORM_CODE_MODELS),
         "timezone": "Europe/Paris", "forecast_days": days,
     })
@@ -428,15 +438,16 @@ def _multimodel_storm_codes(lat, lon, days=2):
         h = get_json("https://api.open-meteo.com/v1/forecast?" + p)["hourly"]
     except Exception:
         return {}
-    times = h["time"]
+    lpi = h.get("lightning_potential_icon_d2") or []
     out = {}
-    for i, t in enumerate(times):
+    for i, t in enumerate(h["time"]):
         codes = []
         for mdl in STORM_CODE_MODELS:
             v = h.get("weather_code_%s" % mdl)
             if v and i < len(v) and v[i] is not None and v[i] >= 95:
                 codes.append(v[i])
-        out[t] = max(codes) if codes else None
+        out[t] = {"code": max(codes) if codes else None,
+                  "lpi": lpi[i] if i < len(lpi) else None}
     return out
 
 
@@ -452,7 +463,7 @@ def analyse_severe(lat, lon, hours=2, day=None):
         "timezone": "Europe/Paris", "forecast_days": fdays,
     })
     h = get_json("https://api.open-meteo.com/v1/forecast?" + p)["hourly"]
-    codes_map = _multimodel_storm_codes(lat, lon, days=fdays)
+    aux = _multimodel_aux(lat, lon, days=fdays)
 
     def g(base, model, i):
         v = h.get("%s_%s" % (base, model))
@@ -501,8 +512,9 @@ def analyse_severe(lat, lon, hours=2, day=None):
         wmaxshear = wmax * shear06 if (wmax and shear06) else None
         ship = _ship(cape, mixr, lr75, t500, shear06, fl)
 
+        a = aux.get(t) or {}
         out.append({
-            "dt": dt, "code": code, "code_multi": codes_map.get(t),
+            "dt": dt, "code": code, "code_multi": a.get("code"), "lpi": a.get("lpi"),
             "gust": gust, "precip": precip,
             "cape": cape, "td": td, "t500": t500, "li": li, "cin": cin,
             "fl": fl, "shear06": shear06, "shear01": shear01, "mixr": mixr,
@@ -527,29 +539,39 @@ def classify_hour(x):
     ship = x["ship"]
     wms = x["wmaxshear"]
     li = x["li"]
+    cin = x["cin"]
+    lpi = x.get("lpi")
+    precip = x["precip"]
 
-    storm_now = (code_eff is not None and code_eff >= 95) or \
-                (x["precip"] and x["precip"] >= 6 and cape >= 600)
-    # environnement sévère « primé » même sans orage encore affiché par les modèles
-    severe_env = (cape >= 800 and sh is not None and sh >= 15
-                  and (li is None or li <= -4)
-                  and ((ship is not None and ship >= 0.5)
-                       or (wms is not None and wms >= 400)))
+    # orage actif : code modèle OU foudre (LPI) OU averse convective intense
+    storm_now = (code_eff is not None and code_eff >= 95) \
+        or (lpi is not None and lpi >= 2) \
+        or (precip and precip >= 4 and cape >= 400)
+    # environnement primé (rappel élevé) + branche cold-core (grêle de printemps)
+    severe_env = (
+        (cape >= 500 and sh is not None and sh >= 15
+         and (li is None or li <= -4)
+         and ((ship is not None and ship >= 0.5) or (wms is not None and wms >= 400)))
+        or (sh is not None and sh >= 18 and t500 is not None and t500 <= -25 and cape >= 300)
+    )
+    # couvercle fort (CIN<-150) sans déclencheur actif -> pas de vigilance (anti-fausse-alerte)
+    if cin is not None and cin < -150 and not storm_now and (lpi is None or lpi < 2):
+        severe_env = False
 
     if not storm_now and not severe_env:
         return 0, ""
     if not storm_now and severe_env:
         return 1, "VIGILANCE (potentiel orageux)"
 
-    freezing_ok = fl is not None and 2400 <= fl <= 3800
-    hail_idx = (ship is not None and ship >= 1.0) or (wms is not None and wms >= 700)
+    freezing_ok = fl is not None and 2200 <= fl <= 3900
+    hail_idx = (ship is not None and ship >= 0.9) or (wms is not None and wms >= 700)
     big_idx = (ship is not None and ship >= 1.5) or (wms is not None and wms >= 900)
     code = code_eff  # pour les tests 96/99 ci-dessous
 
     level, label = 2, "ORAGE"
     # grêle : orage organisé + indices + gate niveau de congélation + air froid à 500 hPa
     if (code in (96, 99)) or (
-        cape >= 1200 and sh is not None and sh >= 15 and freezing_ok
+        cape >= 1000 and sh is not None and sh >= 15 and freezing_ok
         and (t500 is None or t500 <= -15) and hail_idx):
         level, label = 3, "GRÊLE"
     # grosse grêle / supercellule
@@ -662,6 +684,7 @@ def _ingredients_line(x):
     if x["shear06"] is not None:  p.append("cisaill. 0-6km %.0f m/s" % x["shear06"])
     if x["ship"] is not None:     p.append("SHIP %.1f" % x["ship"])
     if x["wmaxshear"] is not None: p.append("WMAXSHEAR %.0f" % x["wmaxshear"])
+    if x.get("lpi"):              p.append("⚡LPI %.1f" % x["lpi"])
     if x["fl"] is not None:       p.append("isotherme 0°C %.0f m" % x["fl"])
     if x["t500"] is not None:     p.append("T500 %.0f°C" % x["t500"])
     if x["li"] is not None:       p.append("LI %.0f" % x["li"])
@@ -774,12 +797,15 @@ def render_alertes():
     """Renvoie (message ou None, liste des nouveaux évènements à mémoriser)."""
     state = json.load(open(STATE_PATH)) if os.path.exists(STATE_PATH) else {"sent": []}
     already = set(state.get("sent", []))
-    blocks, new_keys = [], []
+    blocks, new_keys, errors = [], [], []
 
     for zone, (la, lo) in ZONES.items():
         try:
             hrs = analyse_severe(la, lo, hours=2)
-        except Exception:
+        except Exception as e:
+            errors.append("%s (%s)" % (zone, str(e)[:60]))
+            log_line("%s ERREUR analyse %s : %s" % (
+                datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), zone, e))
             continue
         scored = []
         for x in hrs:
@@ -801,6 +827,16 @@ def render_alertes():
             flux = "\n   ↳ <i>flux de sud : configuration grêligène classique du Rhône</i>"
         blocks.append("%s <b>%s</b> — arrivée vers <b>%s</b>\n   <b>%s</b>\n   <i>%s</i>%s" % (
             LEVEL_ICON.get(lvl, "⛈️"), zone, eta, lbl, _ingredients_line(x), flux))
+
+    # Échec TOTAL de récupération -> alerte technique (ne jamais masquer par un « RAS »)
+    if errors and len(errors) == len(ZONES):
+        key = "TECH|" + datetime.datetime.now().strftime("%Y-%m-%dT%H")  # 1×/h max
+        if key in already:
+            return None, []
+        return ("⚠️ <b>MétéoGuy : surveillance dégradée</b>\n"
+                "Échec de récupération des données sur toutes les zones :\n%s\n"
+                "<i>Réessai à la prochaine passe ; vérifie le bot si ça persiste.</i>"
+                % "\n".join("• " + e for e in errors)), [key]
 
     if not blocks:
         return None, new_keys
