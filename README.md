@@ -58,6 +58,9 @@ lundi). Il n'obéit qu'au propriétaire (`TELEGRAM_CHAT_ID`). Commandes :
 | `/jour <quand>` | météo d'un jour : `demain`, `lundi`, `lundi prochain`, `weekend`, `+3`, `2026-06-13` |
 | `/orages [quand]` | analyse orages complète des 3 zones (**données live** horodatées) |
 | `/radar` | **image radar** des précipitations en temps réel (RainViewer + carte) |
+| `/radaranim` | **radar animé** (GIF) — trajectoire des cellules (passé + nowcast) |
+| `/sante` | qualité de l'air + **pollens (ambroisie)** + UV |
+| `/crue` | vigilance crue Météo-France (Rhône, 38/26/71) |
 | `/semaine` | briefing 7 j + El Niño (analyse Claude) |
 | `/elnino` | point El Niño / ENSO |
 | `/alerte` | forcer un contrôle orages/grêle maintenant |
