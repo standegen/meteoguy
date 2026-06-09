@@ -72,10 +72,11 @@ PROMPT = (
 
 def generate(data):
     prompt = PROMPT % data
-    # 1) OpenAI
+    # 1) API LLM (Anthropic prioritaire, sinon OpenAI)
     msg = m.llm_analyze(prompt)
     if msg:
-        return msg, "OpenAI"
+        brain = "Anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "OpenAI"
+        return msg, brain
     # 2) Claude CLI local
     try:
         r = subprocess.run('claude -p --model claude-sonnet-4-6', input=prompt,

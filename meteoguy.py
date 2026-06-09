@@ -141,32 +141,61 @@ def get_json_post(req):
 # --------------------------------------------------------------------------- #
 # Analyse par IA (OpenAI) — sans dépendance, via API REST
 # --------------------------------------------------------------------------- #
-def llm_analyze(prompt, system=None, timeout=90):
-    """Rédige une analyse via l'API OpenAI. Renvoie le texte, ou None si indispo.
-    Modèle configurable via OPENAI_MODEL (défaut : gpt-5.4-mini)."""
+def _err(prefix, e):
+    try:
+        print(prefix, e.read().decode()[:300])
+    except Exception:
+        print(prefix, e)
+
+
+def _anthropic_analyze(prompt, system, timeout):
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        return None
+    model = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+    body = {"model": model, "max_tokens": 1500,
+            "messages": [{"role": "user", "content": prompt}]}
+    if system:
+        body["system"] = system
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                 "content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            out = json.load(r)
+        return "".join(b.get("text", "") for b in out["content"]).strip()
+    except Exception as e:
+        _err("⚠️  Anthropic :", e)
+        return None
+
+
+def _openai_analyze(prompt, system, timeout):
     key = os.environ.get("OPENAI_API_KEY")
     if not key:
         return None
     model = os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
-    data = json.dumps({"model": model, "messages": messages}).encode("utf-8")
+    messages = ([{"role": "system", "content": system}] if system else []) + \
+               [{"role": "user", "content": prompt}]
     req = urllib.request.Request(
-        "https://api.openai.com/v1/chat/completions", data=data,
-        headers={"Authorization": "Bearer " + key,
-                 "Content-Type": "application/json"})
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps({"model": model, "messages": messages}).encode("utf-8"),
+        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             out = json.load(r)
         return out["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        try:
-            print("⚠️  OpenAI :", e.read().decode()[:300])
-        except Exception:
-            print("⚠️  OpenAI :", e)
+        _err("⚠️  OpenAI :", e)
         return None
+
+
+def llm_analyze(prompt, system=None, timeout=90):
+    """Rédige une analyse via une API LLM. Anthropic prioritaire (ANTHROPIC_API_KEY),
+    sinon OpenAI (OPENAI_API_KEY). Renvoie le texte ou None si aucune clé/échec."""
+    return (_anthropic_analyze(prompt, system, timeout)
+            or _openai_analyze(prompt, system, timeout))
 
 
 # --------------------------------------------------------------------------- #
