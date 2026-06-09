@@ -52,7 +52,9 @@ lundi). Il n'obéit qu'au propriétaire (`TELEGRAM_CHAT_ID`). Commandes :
 
 | Commande | Effet |
 |----------|-------|
+| `/matin` | résumé du jour : pluie, températures + **reco habillage enfant école** 🎒 |
 | `/meteo` | météo du jour à Sablons + **créneaux de pluie** + orages |
+| `/vigilance` | vigilance Météo-France (38/71/26) |
 | `/jour <quand>` | météo d'un jour : `demain`, `lundi`, `lundi prochain`, `weekend`, `+3`, `2026-06-13` |
 | `/orages [quand]` | analyse orages complète des 3 zones (**données live** horodatées) |
 | `/radar` | **image radar** des précipitations en temps réel (RainViewer + carte) |
@@ -63,6 +65,13 @@ lundi). Il n'obéit qu'au propriétaire (`TELEGRAM_CHAT_ID`). Commandes :
 
 > Les commandes `/orages` et `/radar` interrogent les **données en direct** à chaque appel
 > (aucun cache). `/radar` nécessite **Pillow** (inclus dans l'image Docker).
+
+**Automatismes du bot :**
+- ⚡ **Alerte foudre temps réel** (Blitzortung MQTT) : message + **carte d'impact** dès qu'un
+  éclair tombe à **moins de 50 km** d'une zone (throttle 15 min/zone). Dép. `paho-mqtt`.
+- 🎒 **Message quotidien à 6h50** : pluie, températures, reco habillage enfant école.
+- 🚨 **Vigilance Météo-France** : override garanti si orange/rouge Orages sur 38/71/26.
+  Nécessite une clé gratuite `METEOFRANCE_API_KEY` (portail-api.meteofrance.fr, mode APIKey).
 
 **Déploiement (VPS Linux + Docker) :**
 ```bash
