@@ -45,11 +45,43 @@ python meteoguy.py briefing          # briefing déterministe (repli sans IA) ->
 python meteoguy.py send "txt"        # envoi d'un texte de test
 ```
 
-## ☁️ Hébergement cloud — GitHub Actions (gratuit)
+## 🤖 Bot Telegram (hébergement principal — VPS Docker)
 
-Le système tourne sur **GitHub Actions** (`.github/workflows/`), sans serveur :
-- **`alerte.yml`** — toutes les 30 min ; anti-spam persisté via le cache Actions.
-- **`briefing.yml`** — lundi 05h30 UTC (≈ 07h30 Paris) ; analyse rédigée par **Claude (API Anthropic)**.
+`bot.py` est un **process unique** : bot interactif **+** planificateur (alerte 30 min, briefing
+lundi). Il n'obéit qu'au propriétaire (`TELEGRAM_CHAT_ID`). Commandes :
+
+| Commande | Effet |
+|----------|-------|
+| `/meteo` | météo du jour à Sablons + analyse orages |
+| `/jour AAAA-MM-JJ` | météo d'une date précise |
+| `/orages [date]` | analyse orages complète des 3 zones |
+| `/semaine` | briefing 7 j + El Niño (analyse Claude) |
+| `/elnino` | point El Niño / ENSO |
+| `/alerte` | forcer un contrôle orages/grêle maintenant |
+| `/aide` | liste des commandes |
+
+**Déploiement (VPS Linux + Docker) :**
+```bash
+git clone https://github.com/standegen/meteoguy /opt/meteoguy && cd /opt/meteoguy
+cat > .env <<'EOF'
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=268329237
+ANTHROPIC_API_KEY=...
+ANTHROPIC_MODEL=claude-haiku-4-5-20251001
+EOF
+chmod 600 .env
+docker compose up -d --build       # restart:always, TZ Europe/Paris
+```
+**Mise à jour :** `git fetch && git reset --hard origin/main && docker compose up -d --build`.
+**Logs :** `docker compose logs -f`.
+
+## ☁️ Secours — GitHub Actions (manuel)
+
+Les workflows (`.github/workflows/`) sont en **déclenchement manuel** (`workflow_dispatch`) pour
+servir de secours si le VPS est indisponible — leur planification est commentée pour éviter les
+doublons avec le bot :
+- **`alerte.yml`** — contrôle orages/grêle.
+- **`briefing.yml`** — briefing hebdo (analyse **Claude / API Anthropic**).
 
 **Secrets à définir** dans le repo (Settings → Secrets → Actions) :
 | Secret | Rôle |
